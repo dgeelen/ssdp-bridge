@@ -72,4 +72,4 @@ I implemented rudimentary support for rewriting the location URL of SSDP packets
 
 
 # License
-ssdp does not currently have a license.
+ssdp-bridge does not currently have a license.

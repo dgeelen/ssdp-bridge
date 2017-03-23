@@ -10,4 +10,4 @@ ssdp-bridge: $(SOURCES:%.cpp=%.o)
 
 clean:
 	@echo "[cleaning ]"
-	@rm *.o
+	@rm -f *.o

@@ -420,7 +420,7 @@ int main(int argc, const char* argv[]) {
 			}
 		}
 		catch( const std::exception& e ) {
-			//std::cerr << e.what() << std::endl;
+			std::cerr << e.what() << std::endl;
 		}
 		try {
 			for( auto fd : select(sockets) ) {

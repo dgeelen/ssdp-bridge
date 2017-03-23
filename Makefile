@@ -2,7 +2,7 @@ SOURCES := $(shell ls *.cpp)
 
 ssdp-bridge: $(SOURCES:%.cpp=%.o)
 	@echo "[linking  ] $@"
-	@g++ -flto -O3 -o $@ $^
+	@g++ -flto -static -O3 -Wl,--strip-all -o $@ $^
 
 %.o: %.cpp
 	@echo "[compiling] $^"

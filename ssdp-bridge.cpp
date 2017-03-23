@@ -62,48 +62,6 @@ int join_multicast_group() {
 	return fd;
 }
 
-void do_monitor_mode(int fd) {
-	unsigned char buf[BUFSIZE]; /* receive buffer */
-	struct sockaddr_in remaddr; /* remote address */
-	socklen_t addrlen = sizeof(remaddr); /* length of addresses */
-	int recvlen; /* # bytes received */
-
-	/* now loop, receiving data and printing what we received */
-	for (;;) {
-		std::cout << "waiting on port " << SSDP_PORT << "\n";
-		recvlen = recvfrom(fd, buf, BUFSIZE, 0, (struct sockaddr *)&remaddr, &addrlen); printf("received %d bytes\n", recvlen);
-		if(recvlen > 0) {
-			buf[recvlen] = 0;
-			std::cout << "received message:\n---8<---------\n"
-			          << buf
-			          << "--->8---------\n\n";
-		}
-		else {
-			throw errno_error("recvfrom() failed");
-		}
-	} /* never exits */
-}
-
-void do_send_mode(int fd, const char* msg) {
-	/* now loop, sending data */
-	struct sockaddr_in dest_addr = {};
-	dest_addr.sin_family = AF_INET;
-	dest_addr.sin_port = (in_port_t)htons(SSDP_PORT);
-	//dest_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    if(inet_aton(SSDP_ADDR, &dest_addr.sin_addr) == 0) {
-        throw errno_error("inet_aton() failed");
-    }
-	for(;;) {
-		std::cout << "Now sending... ";
-		int ret = sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&dest_addr, sizeof(struct sockaddr_in));
-		std::cout << "ok" << std::endl;
-		if( ret == -1 ) {
-			throw errno_error("sendto() failed");
-		}
-		std::this_thread::sleep_for( std::chrono::seconds( 1 ) );
-	}
-}
-
 std::string to_string(const sockaddr_in& addr) {
 	char str[64] = {};
 	inet_ntop(AF_INET, &addr.sin_addr, str, sizeof(str));

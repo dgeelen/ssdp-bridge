@@ -1,20 +1,30 @@
 #include "errno_error.hpp"
 #include <algorithm>
-#include <iostream>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
 #include <cstdio>
-#include <string.h>
+#include <cstdlib>
 #include <errno.h>
 #include <iomanip>
+#include <iostream>
+#include <string.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
+#include <arpa/inet.h>
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/optional.hpp>
+#include <sys/socket.h>
 
-#define BUFSIZE 4096
-#define SSDP_PORT 1900
-#define SSDP_ADDR "239.255.255.250"
+const std::string ssdp_addr( "239.255.255.250" );
+const std::string peer_list_env_var_name( "SSDP_BRIDGE_PEERS" );
+enum {
+	ssdp_port = 1900,
+	ssdp_bridge_default_port = 17113,
+	buffer_size = 4096,
+};
 
+#define STRINGIFY_(...) #__VA_ARGS__
+#define STRINGIFY(...) STRINGIFY_(__VA_ARGS__)
 
 int join_multicast_group() {
 	int fd(0);
@@ -43,7 +53,7 @@ int join_multicast_group() {
 	sockaddr_in myaddr = {}; /* our address */
 	myaddr.sin_family = AF_INET;
 	myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	myaddr.sin_port = htons(SSDP_PORT);
+	myaddr.sin_port = htons(ssdp_port);
 	if(bind(fd, reinterpret_cast<sockaddr*>(&myaddr), sizeof(myaddr)) < 0) {
 		throw errno_error("bind() failed");
 	}
@@ -52,7 +62,7 @@ int join_multicast_group() {
 	// IP_ADD_MEMBERSHIP option must be called for each local interface
 	// over which the multicast datagrams are to be received.
 	ip_mreq group = {};
-	group.imr_multiaddr.s_addr = inet_addr(SSDP_ADDR);
+	group.imr_multiaddr.s_addr = inet_addr(ssdp_addr.c_str());
 	group.imr_interface.s_addr = htonl(INADDR_ANY);
 	if( 0 != setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&group, sizeof(group)) ) {
 		throw errno_error("setsockopt() failed");
@@ -74,7 +84,7 @@ class Remote {
 
 public:
 	Remote()
-	: m_fd(0)
+	: m_fd{}
 	, m_addr{}
 	{}
 
@@ -244,11 +254,11 @@ std::string ssdp_replace_location(
 
 template<typename T>
 void forward_ssdp_packet(int fd, T remotes) {
-	unsigned char data[BUFSIZE] = {};
-	size_t len = recv(fd, data+4, BUFSIZE-4, 0);
+	unsigned char data[buffer_size] = {};
+	size_t len = recv(fd, data+4, buffer_size-4, 0);
 
 	if(!is_ssdp_message(data+4,len)) {
-		data[BUFSIZE-1]=0;
+		data[buffer_size-1]=0;
 		char* m = strstr((char*)data+4,"\r\n");
 		if(m) *m = 0;
 		std::cout << "not forwarding ssdp message to remote: '" << ((const char*)data+4) << "'\n";
@@ -271,7 +281,7 @@ void handle_remote(Remote& remote, int fd) {
 	std::uint32_t len(0);
 	remote.recv(&len, sizeof(len));
 	len = ntohl(len);
-	if(len > BUFSIZE) {
+	if(len > buffer_size) {
 		std::stringstream ss;
 		ss << "Invalid length: "
 		   << len
@@ -279,12 +289,12 @@ void handle_remote(Remote& remote, int fd) {
 		   << remote;
 		throw std::runtime_error(ss.str());
 	}
-	unsigned char data[BUFSIZE] = {};
+	unsigned char data[buffer_size] = {};
 	remote.recv(data, len);
 	//std::cerr << "replaying " << std::to_string(len) << " bytes from " << remote << std::endl;
 
 	if(!is_ssdp_message(data,len)) {
-		data[BUFSIZE-1]=0;
+		data[buffer_size-1]=0;
 		char* m = strstr((char*)data,"\r\n");
 		if(m) *m = 0;
 		std::cout << "not replaying ssdp message from remote: '" << ((const char*)data) << "'\n";
@@ -316,7 +326,7 @@ void handle_remote(Remote& remote, int fd) {
 	const std::string& message = ssdp_message;
 	const std::string& location_after = ssdp_get_location(message);
 
-	if(message.size() + 4 > BUFSIZE) {
+	if(message.size() + 4 > buffer_size) {
 		throw std::runtime_error("cannot forward packet after redirection: too large");
 	}
 
@@ -328,8 +338,8 @@ void handle_remote(Remote& remote, int fd) {
 
 	struct sockaddr_in dest_addr = {};
 	dest_addr.sin_family = AF_INET;
-	dest_addr.sin_port = (in_port_t)htons(SSDP_PORT);
-	if(inet_aton(SSDP_ADDR, &dest_addr.sin_addr) == 0) {
+	dest_addr.sin_port = (in_port_t)htons(ssdp_port);
+	if(inet_aton(ssdp_addr.c_str(), &dest_addr.sin_addr) == 0) {
 		throw errno_error("inet_aton() failed");
 	}
 
@@ -339,15 +349,70 @@ void handle_remote(Remote& remote, int fd) {
 	}
 }
 
+boost::optional<Remote> parse_remote(const std::string& str) {
+	std::string::size_type port_idx = str.find(':');
+	std::string port = std::to_string(ssdp_bridge_default_port);
+	if(port_idx != std::string::npos)
+		port = str.substr(port_idx+1);
+	std::string ipaddr = str.substr(0,port_idx);
+
+	sockaddr_in addr = {};
+	addr.sin_family = AF_INET;
+	if(!inet_aton(ipaddr.c_str(), &addr.sin_addr)) {
+		std::cerr << "Invalid IP address: '" << ipaddr << "'" << std::endl;
+		return boost::none;
+	}
+	addr.sin_port = htons(std::stoi(port));
+	if(std::to_string(ntohs(addr.sin_port)) != port) {
+		std::cerr << "Invalid port: '" << port << "'" << std::endl;
+		return boost::none;
+	}
+	return Remote(0, addr);
+}
+
+boost::optional<std::vector<Remote>> parse_remotes_from_env() {
+	std::vector<Remote> remotes;
+	if(const char* addr_list = std::getenv(peer_list_env_var_name.c_str())) {
+		std::string port_ = std::to_string(ssdp_bridge_default_port);
+		std::vector<std::string> addrs;
+		boost::split(addrs, addr_list, boost::algorithm::is_any_of(","));
+		for(const auto& addr : addrs) {
+			const auto& remote = parse_remote(addr);
+			if(remote)
+				remotes.emplace_back(*remote);
+			else
+				return boost::none;
+		};
+		std::cout << "Configuring peers from environment:\n";
+		for(const auto& remote : remotes) {
+			std::cout << "\t" << remote << "\n";
+		}
+		std::cout << std::endl;
+	}
+	return remotes;
+}
+
 
 int main(int argc, const char* argv[]) {
-	if( argc < 2 ) {
-		std::cerr << "usage: " << argv[0] << " <server> [port]" << std::endl;
+	std::vector<Remote> remotes;
+	boost::optional<std::vector<Remote>> env_remotes = parse_remotes_from_env();
+	if(env_remotes)
+		remotes = *env_remotes;
+	else
 		return 1;
+
+	if( argc > 1 ) {
+		const auto& remote = parse_remote(argv[1]);
+		if(remote)
+			remotes.emplace_back(*remote);
+		else
+			return 1;
 	}
 
-	std::string server = argv[1];
-	std::string port   = argc > 2 ? argv[2] : "17113";
+	if( remotes.empty() ) {
+		std::cerr << "usage: " << argv[0] << " <server-ip[:port]>" << std::endl;
+		return 1;
+	}
 
 	int ssdp_sock(0);
 	try {
@@ -360,25 +425,18 @@ int main(int argc, const char* argv[]) {
 		return 1;
 	}
 
-	std::vector<int>    sockets = { ssdp_sock };
-	std::vector<Remote> remotes;
-
-	sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	inet_aton(server.c_str(), &addr.sin_addr);
-	addr.sin_port = htons(std::stoi(port));
-	Remote target_remote(0, addr);
-
+	std::vector<int> sockets = { ssdp_sock };
 	while(true) {
-		try {
-			if(!target_remote.is_connected()) {
-				int fd = target_remote.connect();
-				sockets.push_back(fd);
-				remotes.push_back(target_remote);
+		for(auto& remote : remotes ) {
+			if( !remote.is_connected() ) {
+				try {
+					int fd = remote.connect();
+					sockets.push_back(fd);
+				}
+				catch( const std::exception& e ) {
+					std::cerr << e.what() << std::endl;
+				}
 			}
-		}
-		catch( const std::exception& e ) {
-			std::cerr << e.what() << std::endl;
 		}
 		try {
 			for( auto fd : select(sockets) ) {

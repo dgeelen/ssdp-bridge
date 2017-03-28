@@ -1,4 +1,6 @@
 #include "errno_error.hpp"
+#include "util.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -23,8 +25,6 @@ enum {
 	buffer_size = 4096,
 };
 
-#define STRINGIFY_(...) #__VA_ARGS__
-#define STRINGIFY(...) STRINGIFY_(__VA_ARGS__)
 
 int join_multicast_group() {
 	int fd(0);

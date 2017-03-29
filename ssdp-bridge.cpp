@@ -171,15 +171,25 @@ public:
 				send(data, strlen(data));
 
 				char buf[64] = {};
-				::recv(m_fd, buf, 64, 0);
-				buf[63] = 0;
+				int n = ::recv(m_fd, buf, 64, 0);
+				if( n < 0 ) {
+					throw errno_error( "recv() failed" );
+				}
+				std::stringstream raw_buf;
+				for(size_t i = 0; i < n; ++i) {
+					raw_buf << "0x"
+					        << std::setw(2)
+					        << std::setfill('0')
+					        << std::hex
+					        << int(buf[i]);
+				}
+				buf[n] = 0;
 				char* nl = strstr(buf,"\n");
 				if(nl) *nl = 0;
 				if(strcmp("ssdp-bridge-python v0.0.1", buf) != 0) {
-					std::stringstream ss;
-					ss <<"Unsupported remote server '" << buf << "'";
+					log(error) <<"Unsupported remote server '" << buf << "' (" << n << (n?" | ":"") << raw_buf.str() << ")";
 					close();
-					throw std::runtime_error(ss.str());
+					return 0; // expected error, no throw
 				}
 
 				log(status) << "connected to " << *this << "!";
@@ -210,15 +220,17 @@ public:
 		return ::send(m_fd, data, len, MSG_NOSIGNAL);
 	}
 
-	ssize_t recv(void* data, size_t len) const { TRACE
+	ssize_t recv(void* data, size_t len) { TRACE
 		ssize_t offs(0);
 		while(len-offs) {
 			ssize_t r = ::recv(m_fd, (char*)data+offs, len-offs, MSG_NOSIGNAL);
-			if( r < 0) {
+			if(r < 0) {
 				throw errno_error("recv failed: " + std::to_string(len) + ", " + std::to_string(offs) + ", " + std::to_string(offs+len) + ", " + std::to_string(r));
 			}
-			if( r == 0) {
-				throw std::runtime_error("partner disconnected");
+			if(r == 0) {
+				log(error) << "partner '" << *this << "' disconnected";
+				close();
+				return 0;
 			}
 			if(ssize_t(len) != r) {
 				log(error) << "Short recv: " << (offs+r) << "/" << len;

@@ -518,6 +518,7 @@ int main(int argc, const char* argv[]) { TRACE
 
 	sockaddr_in addr = {};
 	remotes.emplace_back(ssdp_sock, addr);
+	size_t error_count{0};
 	while(true) {
 		for(auto& remote : remotes ) {
 			if( !remote.is_connected() && !remote.is_connecting() ) {
@@ -545,10 +546,14 @@ int main(int argc, const char* argv[]) { TRACE
 					handle_remote(*remote, ssdp_sock);
 				}
 			}
+			error_count = 0;
 		}
 		catch( const std::exception& e ) {
-			log(error) << "Fatal error:\n" << e.what();
-			return 1;
+			log(error) << e.what();
+			if( ++error_count > 3 ) {
+				log(error) << "Too many errors, aborting...";
+				return 1;
+			}
 		}
 	}
 

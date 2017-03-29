@@ -6,7 +6,7 @@ ssdp-bridge: $(SOURCES:%.cpp=%.o)
 
 %.o: %.cpp
 	@echo "[compiling] $^"
-	@g++ -flto -O3 -c -Wall -Wextra -Werror -pedantic -std=c++14 -o $@ $^
+	@g++ -flto -O3 -c -Wall -Wextra -Werror -Wfatal-errors -pedantic -std=c++14 -o $@ $^
 
 clean:
 	@echo "[cleaning ]"

@@ -1,5 +1,4 @@
 #include "logger.hpp"
-#include <algorithm>
 #include <iomanip>
 #include <string>
 #include <cassert>

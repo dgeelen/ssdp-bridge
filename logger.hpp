@@ -1,5 +1,4 @@
 #pragma once
-#include <cstdlib>
 #include <iostream>
 
 enum log_level {

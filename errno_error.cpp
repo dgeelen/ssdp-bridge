@@ -1,6 +1,5 @@
 #include "errno_error.hpp"
 #include <errno.h>
-#include "util.hpp"
 #include <string.h>
 #include <cassert>
 #include <vector>

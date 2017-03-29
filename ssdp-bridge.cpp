@@ -40,7 +40,7 @@ int join_multicast_group() { TRACE
 	// Enable SO_REUSEADDR to allow multiple instances of this application to receive copies of the multicast datagrams.
 	option = 1;
 	if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) < 0) {
-		throw errno_error("setsockopt(IP_MULTICAST_LOOP) failed");
+		throw errno_error("setsockopt(SO_REUSEADDR) failed");
 	}
 
 	// make sure IP_MULTICAST_LOOP is enabled, so that other processes on this

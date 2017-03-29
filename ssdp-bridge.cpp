@@ -1,10 +1,12 @@
 #include "errno_error.hpp"
+#include "logger.hpp"
 #include "util.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <errno.h>
+#include <fcntl.h>
 #include <iomanip>
 #include <iostream>
 #include <string.h>
@@ -26,7 +28,7 @@ enum {
 };
 
 
-int join_multicast_group() {
+int join_multicast_group() { TRACE
 	int fd(0);
 	int option(0);
 
@@ -68,7 +70,7 @@ int join_multicast_group() {
 		throw errno_error("setsockopt() failed");
 	}
 
-	//std::cout << "ssdp fd: " << fd << std::endl;
+	log(debug) << "ssdp fd: " << fd;
 	return fd;
 }
 
@@ -81,68 +83,135 @@ std::string to_string(const sockaddr_in& addr) {
 class Remote {
 	int         m_fd;
 	sockaddr_in m_addr;
+	enum {
+		idle,
+		connecting,
+		connected
+	} m_state;
 
 public:
-	Remote()
-	: m_fd{}
-	, m_addr{}
-	{}
-
 	Remote(int fd, const sockaddr_in& addr)
-	: m_fd(fd)
+	: m_fd{fd}
 	, m_addr{addr}
-	{}
+	, m_state{fd ? connected : idle}
+	{TRACE}
+
+	int get_fd() const {
+		return m_fd;
+	}
 
 	bool has_fd(int fd) const {
 		return m_fd == fd;
 	}
 
-	const sockaddr_in get_addr() const {
+	const sockaddr_in& get_addr() const {
 		return m_addr;
 	}
 
-	int connect() {
-		if(is_connected()) return m_fd;
-		std::cerr << "connecting to " << *this << std::endl;
+	int connect() { TRACE
+		switch(m_state) {
+			case connected: {
+				m_state = connected;
+			}; break;
 
-		if((m_fd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-			m_fd = 0;
-			throw errno_error( "cannot create socket" );
+			case idle: {
+				log(status) << "Initiating connection to " << *this;
+
+				if((m_fd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
+					close();
+					throw errno_error( "cannot create socket" );
+				}
+
+				// setup non blocking socket
+				int flags = fcntl(m_fd, F_GETFL, 0);
+				log(debug) << "calling ::fcntl(F_SETFL)...";
+				if(::fcntl(m_fd, F_SETFL, flags|O_NONBLOCK) != 0) {
+					close();
+					throw errno_error( "failed to set socket to non-blocking mode" );
+				}
+
+				if(::connect(m_fd, (sockaddr*)&m_addr, sizeof(m_addr)) < 0) {
+					if(errno != EINPROGRESS) {
+						close();
+						throw errno_error( "cannot connect socket" );
+					}
+				}
+
+				log(debug) << "idle --> connecting...";
+				m_state = connecting;
+			}; break;
+
+			case connecting: {
+				// check if we've got signal
+				log(debug) << "Checking for errors...";
+				int so_error{0};
+				socklen_t so_error_len{sizeof(so_error)};
+				if(::getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &so_error, &so_error_len) < 0) {
+					close();
+					throw errno_error( "getsockopt()" );
+				}
+				if(so_error != 0) {
+						log(debug) << "connection to " << *this << " failed!";
+						close();
+						return 0; // expected error, no throw
+				}
+
+				// restore to blocking socket
+				log(debug) << "calling ::fcntl(F_GETFL)...";
+				int flags = fcntl(m_fd, F_GETFL, 0);
+				log(debug) << "calling ::fcntl(F_SETFL)...";
+				if(::fcntl(m_fd, F_SETFL, flags&~O_NONBLOCK) != 0) {
+					close();
+					throw errno_error( "failed to set socket to blocking mode" );
+				}
+
+				log(status) << "Establishing connection to " << *this;
+
+				log(debug) << "calling send()...";
+				const char data[] = "ssdp-bridge-c++ v0.0.1\n";
+				send(data, strlen(data));
+
+				char buf[64] = {};
+				::recv(m_fd, buf, 64, 0);
+				buf[63] = 0;
+				char* nl = strstr(buf,"\n");
+				if(nl) *nl = 0;
+				if(strcmp("ssdp-bridge-python v0.0.1", buf) != 0) {
+					std::stringstream ss;
+					ss <<"Unsupported remote server '" << buf << "'";
+					close();
+					throw std::runtime_error(ss.str());
+				}
+
+				log(status) << "connected to " << *this << "!";
+				log(debug) << "connecting --> connected...";
+				m_state = connected;
+			}; break;
 		}
 
-		if(::connect(m_fd, (sockaddr*)&m_addr, sizeof(m_addr)) < 0) {
-			::close(m_fd);
-			m_fd = 0;
-			throw errno_error( "cannot create socket" );
-		}
-
-		const char data[] = "ssdp-bridge-c++ v0.0.1\n";
-		send(data, strlen(data));
-
-		char buf[64];
-		::recv(m_fd, buf, 64, 0);
-		buf[63] = 0;
-		char* nl = strstr(buf,"\n");
-		if(nl) *nl = 0;
-		if(strcmp("ssdp-bridge-python v0.0.1", buf) != 0) {
-			std::stringstream ss;
-			ss <<"Unsupported remote server '" << buf << "'";
-			throw std::runtime_error(ss.str());
-		}
-
-		std::cerr << "connected!" << std::endl;
 		return m_fd;
 	}
 
-	bool is_connected() const {
-		return m_fd != 0;
+	void close() { TRACE
+		::close(m_fd);
+		m_fd = 0;
+		log(debug) << "??? --> idle...";
+		m_state = idle;
 	}
 
-	ssize_t send(const void* data, size_t len) const {
+	bool is_connecting() const {
+		return m_state == connecting;
+	}
+
+	bool is_connected() const {
+		return m_state == connected;
+	}
+
+	ssize_t send(const void* data, size_t len) const { TRACE
 		return ::send(m_fd, data, len, 0);
 	}
 
-	ssize_t recv(void* data, size_t len) const {
+	ssize_t recv(void* data, size_t len) const { TRACE
 		ssize_t offs(0);
 		while(len-offs) {
 			ssize_t r = ::recv(m_fd, (char*)data+offs, len-offs, 0);
@@ -152,9 +221,9 @@ public:
 			if( r == 0) {
 				throw std::runtime_error("partner disconnected");
 			}
-			//if(ssize_t(len) != r) {
-				//std::cerr << "Short recv: " << (offs+r) << "/" << len << std::endl;
-			//}
+			if(ssize_t(len) != r) {
+				log(error) << "Short recv: " << (offs+r) << "/" << len;
+			}
 			offs += r;
 		}
 		return offs;
@@ -165,29 +234,44 @@ public:
 	}
 };
 
-template<typename T>
-T select(const T& sockets) {
+struct select_result {
+	std::vector<Remote*> readable;
+	std::vector<Remote*> writable;
+	std::vector<Remote*> excepted;
+};
+select_result select(std::vector<Remote>& remotes) { TRACE
 	fd_set readfds = {};
 	fd_set writefds = {};
 	fd_set exceptfds = {};
 	FD_ZERO(&readfds);
-	for(const auto& socket : sockets) {
-		//std::cerr << "FD_SET: " << socket << std::endl;
-		FD_SET(socket, &readfds);
-	}
 	FD_ZERO(&writefds);
 	FD_ZERO(&exceptfds);
+	for(const auto& remote : remotes) {
+		int fd = remote.get_fd();
+		if(!remote.is_connecting()) { // Connected sockets are always writable
+			FD_SET(fd, &readfds);
+		}
+		else {
+			// waiting for a connection, when this either succeeds _or_ fails the
+			// socket will become writable.
+			FD_SET(fd, &writefds);
+		}
+		FD_SET(fd, &exceptfds);
+	}
 	timeval timeout = {};
 	timeout.tv_sec = 1;
-	//std::cerr << "select" << std::endl;
 	int n = select(FD_SETSIZE, &readfds, &writefds, &exceptfds, &timeout);
-	T result;
+	select_result result;
 	if( n > 0 ) {
-		//std::cerr << "selected: " << n << std::endl;
-		for(const auto& socket : sockets) {
-			if( FD_ISSET(socket, &readfds) ) {
-				//std::cerr << "FD_ISSET: " << socket << std::endl;
-				result.emplace_back(socket);
+		for(auto& remote : remotes) {
+			if( FD_ISSET(remote.get_fd(), &readfds) ) {
+				result.readable.emplace_back(&remote);
+			}
+			if( FD_ISSET(remote.get_fd(), &writefds) ) {
+				result.writable.emplace_back(&remote);
+			}
+			if( FD_ISSET(remote.get_fd(), &exceptfds) ) {
+				result.excepted.emplace_back(&remote);
 			}
 		}
 	}
@@ -200,14 +284,14 @@ const std::string msg_notify     {"NOTIFY "};
 const std::string msg_msearch    {"M-SEARCH "};
 const std::string msg_200OK      {"HTTP/1.1 200 OK"};
 const std::string field_location {"LOCATION: "};
-bool is_ssdp_message(const unsigned char message[], size_t len) {
+bool is_ssdp_message(const unsigned char message[], size_t len) { TRACE
 	if(std::mismatch(std::begin(msg_notify), std::end(msg_notify), message, message+len).first == std::end(msg_notify)) return true;
 	if(std::mismatch(std::begin(msg_msearch), std::end(msg_msearch), message, message+len).first == std::end(msg_msearch)) return true;
 	if(std::mismatch(std::begin(msg_200OK), std::end(msg_200OK), message, message+len).first == std::end(msg_200OK)) return true;
 	return false;
 }
 
-std::string ssdp_get_location(const std::string& message) {
+std::string ssdp_get_location(const std::string& message) { TRACE
 	std::string::size_type start = message.find(field_location);
 	std::string::size_type end = message.find("\r\n", start);
 	start += field_location.size();
@@ -219,7 +303,7 @@ std::string ssdp_replace_location(
 	const sockaddr_in& replacement_addr
 	//const sockaddr_in& from_addr,
 	//const sockaddr_in& to_addr
-) {
+) { TRACE
 	// isolate the location string
 	std::string::size_type start = message.find(field_location);
 	if(start == std::string::npos) return message;
@@ -243,8 +327,8 @@ std::string ssdp_replace_location(
 	if(replace_end == std::string::npos)
 		replace_end = end;
 
-  //const std::string& from = message.substr(replace_start, replace_end-replace_start);
-	//std::cout << "replace: '" << from << "' --> '" << replacement << "'" << std::endl;
+  const std::string& from = message.substr(replace_start, replace_end-replace_start);
+	log(debug) << "replace: '" << from << "' --> '" << replacement << "'";
 
 	// replace
 	return std::string(message).replace(replace_start, replace_end-replace_start, replacement);
@@ -253,7 +337,7 @@ std::string ssdp_replace_location(
 ////////////////////////////////////////////////////////////////////////////////
 
 template<typename T>
-void forward_ssdp_packet(int fd, T remotes) {
+void forward_ssdp_packet(int fd, T remotes) { TRACE
 	unsigned char data[buffer_size] = {};
 	size_t len = recv(fd, data+4, buffer_size-4, 0);
 
@@ -261,23 +345,25 @@ void forward_ssdp_packet(int fd, T remotes) {
 		data[buffer_size-1]=0;
 		char* m = strstr((char*)data+4,"\r\n");
 		if(m) *m = 0;
-		std::cout << "not forwarding ssdp message to remote: '" << ((const char*)data+4) << "'\n";
+		//log(debug) << "not forwarding ssdp message to remote: '" << ((const char*)data+4) << "'\n";
 		return;
 	}
 	//std::string ssdp_message((const char*)(data+4), len);
 
 	for(const auto& remote : remotes) {
+		if(remote.get_fd() == fd) continue;
+		if(!remote.is_connected()) continue;
 		std::uint32_t n = htonl(len);
 		memcpy(data, &n, sizeof(n));
 
-		//std::cerr << "forwarding " << len << " bytes to " << remote << std::endl;
+		log(debug) << "forwarding " << len << " bytes to " << remote;
 		if(remote.send(data, len+sizeof(n)) < 0 ) {
-			std::cerr << "error sending to " << remote << std::endl;
+			log(error) << "error sending to " << remote;
 		}
 	}
 }
 
-void handle_remote(Remote& remote, int fd) {
+void handle_remote(Remote& remote, int fd) { TRACE
 	std::uint32_t len(0);
 	remote.recv(&len, sizeof(len));
 	len = ntohl(len);
@@ -291,13 +377,13 @@ void handle_remote(Remote& remote, int fd) {
 	}
 	unsigned char data[buffer_size] = {};
 	remote.recv(data, len);
-	//std::cerr << "replaying " << std::to_string(len) << " bytes from " << remote << std::endl;
+	log(debug) << "replaying " << std::to_string(len) << " bytes from " << remote;
 
 	if(!is_ssdp_message(data,len)) {
 		data[buffer_size-1]=0;
 		char* m = strstr((char*)data,"\r\n");
 		if(m) *m = 0;
-		std::cout << "not replaying ssdp message from remote: '" << ((const char*)data) << "'\n";
+		log(warn) << "not replaying ssdp message from remote: '" << ((const char*)data) << "'";
 		return;
 	}
 	std::string ssdp_message((const char*)(data), len);
@@ -349,7 +435,7 @@ void handle_remote(Remote& remote, int fd) {
 	}
 }
 
-boost::optional<Remote> parse_remote(const std::string& str) {
+boost::optional<Remote> parse_remote(const std::string& str) { TRACE
 	std::string::size_type port_idx = str.find(':');
 	std::string port = std::to_string(ssdp_bridge_default_port);
 	if(port_idx != std::string::npos)
@@ -359,18 +445,18 @@ boost::optional<Remote> parse_remote(const std::string& str) {
 	sockaddr_in addr = {};
 	addr.sin_family = AF_INET;
 	if(!inet_aton(ipaddr.c_str(), &addr.sin_addr)) {
-		std::cerr << "Invalid IP address: '" << ipaddr << "'" << std::endl;
+		log(error) << "Invalid IP address: '" << ipaddr << "'";
 		return boost::none;
 	}
 	addr.sin_port = htons(std::stoi(port));
 	if(std::to_string(ntohs(addr.sin_port)) != port) {
-		std::cerr << "Invalid port: '" << port << "'" << std::endl;
+		log(error) << "Invalid port: '" << port << "'";
 		return boost::none;
 	}
 	return Remote(0, addr);
 }
 
-boost::optional<std::vector<Remote>> parse_remotes_from_env() {
+boost::optional<std::vector<Remote>> parse_remotes_from_env() { TRACE
 	std::vector<Remote> remotes;
 	if(const char* addr_list = std::getenv(peer_list_env_var_name.c_str())) {
 		std::string port_ = std::to_string(ssdp_bridge_default_port);
@@ -383,17 +469,16 @@ boost::optional<std::vector<Remote>> parse_remotes_from_env() {
 			else
 				return boost::none;
 		};
-		std::cout << "Configuring peers from environment:\n";
+		log(status) << "Configuring peers from environment:";
 		for(const auto& remote : remotes) {
-			std::cout << "\t" << remote << "\n";
+			log(status) << "\t" << remote;
 		}
-		std::cout << std::endl;
 	}
 	return remotes;
 }
 
 
-int main(int argc, const char* argv[]) {
+int main(int argc, const char* argv[]) { TRACE
 	std::vector<Remote> remotes;
 	boost::optional<std::vector<Remote>> env_remotes = parse_remotes_from_env();
 	if(env_remotes)
@@ -401,13 +486,21 @@ int main(int argc, const char* argv[]) {
 	else
 		return 1;
 
-	if( argc > 1 ) {
-		const auto& remote = parse_remote(argv[1]);
-		if(remote)
-			remotes.emplace_back(*remote);
-		else
-			return 1;
+	log_level max_loglevel(status);
+	for(int i = 1; i < argc; ++i ) {
+		const std::string& arg(argv[i]);
+		if( arg == "-v" ) {
+			max_loglevel = log_level(max_loglevel + 1);
+		}
+		else {
+			const auto& remote = parse_remote(arg);
+			if(remote)
+				remotes.emplace_back(*remote);
+			else
+				return 1;
+		}
 	}
+	set_max_loglevel(max_loglevel);
 
 	if( remotes.empty() ) {
 		std::cerr << "usage: " << argv[0] << " <server-ip[:port]>" << std::endl;
@@ -419,41 +512,43 @@ int main(int argc, const char* argv[]) {
 		ssdp_sock = join_multicast_group();
 	}
 	catch( const std::exception& e ) {
-		std::cerr << "Failed to join multicast group:\n"
-		          << e.what()
-		          << std::endl;
+		log(error) << "Failed to join multicast group:\n"
+		           << e.what();
 		return 1;
 	}
 
-	std::vector<int> sockets = { ssdp_sock };
+	sockaddr_in addr = {};
+	remotes.emplace_back(ssdp_sock, addr);
 	while(true) {
 		for(auto& remote : remotes ) {
-			if( !remote.is_connected() ) {
+			if( !remote.is_connected() && !remote.is_connecting() ) {
 				try {
-					int fd = remote.connect();
-					sockets.push_back(fd);
+					remote.connect();
 				}
 				catch( const std::exception& e ) {
-					std::cerr << e.what() << std::endl;
+					log(error) << e.what();
 				}
 			}
 		}
 		try {
-			for( auto fd : select(sockets) ) {
-				//std::cerr << "selected: " << fd << std::endl;
-				if(fd == ssdp_sock) {
-					forward_ssdp_packet(fd, remotes);
+			const auto& selected = select(remotes);
+			for(const auto& remote : selected.writable) {
+				//writeable should be sockets that are trying to connect (but have failed)
+				log(debug) << "writable: " << *remote;
+				remote->connect();
+			}
+			for(const auto& remote : selected.readable ) {
+				log(debug) << "readable: " << *remote;
+				if(remote->get_fd() == ssdp_sock) {
+					forward_ssdp_packet(ssdp_sock, remotes);
 				}
 				else {
-					const auto& remote = std::find_if(remotes.begin(), remotes.end(), [=](const Remote& remote) { return remote.has_fd(fd); });
-					if(remote != remotes.end()) {
-						handle_remote(*remote, ssdp_sock);
-					}
+					handle_remote(*remote, ssdp_sock);
 				}
 			}
 		}
 		catch( const std::exception& e ) {
-			std::cerr << "Fatal error:\n" << e.what() << std::endl;
+			log(error) << "Fatal error:\n" << e.what();
 			return 1;
 		}
 	}

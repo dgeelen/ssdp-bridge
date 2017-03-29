@@ -9,5 +9,7 @@ ssdp-bridge: $(SOURCES:%.cpp=%.o)
 	@g++ -flto -O3 -c -Wall -Wextra -Werror -Wfatal-errors -pedantic -std=c++14 -o $@ $^
 
 clean:
-	@echo "[cleaning ]"
+	@echo "[cleaning ] object files"
 	@rm -f *.o
+	@echo "[cleaning ] ssdp-bridge"
+	@rm -f ssdp-bridge

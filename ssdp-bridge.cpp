@@ -124,7 +124,7 @@ public:
 
 				// setup non blocking socket
 				int flags = fcntl(m_fd, F_GETFL, 0);
-				log(debug) << "calling ::fcntl(F_SETFL)...";
+				log(trace) << "calling ::fcntl(F_SETFL)...";
 				if(::fcntl(m_fd, F_SETFL, flags|O_NONBLOCK) != 0) {
 					close();
 					throw errno_error( "failed to set socket to non-blocking mode" );
@@ -157,9 +157,9 @@ public:
 				}
 
 				// restore to blocking socket
-				log(debug) << "calling ::fcntl(F_GETFL)...";
+				log(trace) << "calling ::fcntl(F_GETFL)...";
 				int flags = fcntl(m_fd, F_GETFL, 0);
-				log(debug) << "calling ::fcntl(F_SETFL)...";
+				log(trace) << "calling ::fcntl(F_SETFL)...";
 				if(::fcntl(m_fd, F_SETFL, flags&~O_NONBLOCK) != 0) {
 					close();
 					throw errno_error( "failed to set socket to blocking mode" );
@@ -167,7 +167,6 @@ public:
 
 				log(status) << "Establishing connection to " << *this;
 
-				log(debug) << "calling send()...";
 				const char data[] = "ssdp-bridge-c++ v0.0.1\n";
 				send(data, strlen(data));
 
@@ -534,11 +533,11 @@ int main(int argc, const char* argv[]) { TRACE
 			const auto& selected = select(remotes);
 			for(const auto& remote : selected.writable) {
 				//writeable should be sockets that are trying to connect (but have failed)
-				log(debug) << "writable: " << *remote;
+				log(trace) << "writable: " << *remote;
 				remote->connect();
 			}
 			for(const auto& remote : selected.readable ) {
-				log(debug) << "readable: " << *remote;
+				log(trace) << "readable: " << *remote;
 				if(remote->get_fd() == ssdp_sock) {
 					forward_ssdp_packet(ssdp_sock, remotes);
 				}

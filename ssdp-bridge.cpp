@@ -207,13 +207,13 @@ public:
 	}
 
 	ssize_t send(const void* data, size_t len) const { TRACE
-		return ::send(m_fd, data, len, 0);
+		return ::send(m_fd, data, len, MSG_NOSIGNAL);
 	}
 
 	ssize_t recv(void* data, size_t len) const { TRACE
 		ssize_t offs(0);
 		while(len-offs) {
-			ssize_t r = ::recv(m_fd, (char*)data+offs, len-offs, 0);
+			ssize_t r = ::recv(m_fd, (char*)data+offs, len-offs, MSG_NOSIGNAL);
 			if( r < 0) {
 				throw errno_error("recv failed: " + std::to_string(len) + ", " + std::to_string(offs) + ", " + std::to_string(offs+len) + ", " + std::to_string(r));
 			}

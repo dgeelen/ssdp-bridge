@@ -3,6 +3,7 @@
 #include "logger.hpp"
 #include "util.hpp"
 #include <fcntl.h> // ::fcntl()
+#include <sys/select.h> // fd_set, ::select()
 #include <sys/socket.h> // ::socket()
 #include <unistd.h> // ::close()
 #include <cstring> // ::strlen()

@@ -12,6 +12,7 @@ const char* level_desc(log_level level) {
 		case trace : return "Trace";
 	}
 	assert(false);
+	return "(unknown log level)";
 }
 
 namespace {
